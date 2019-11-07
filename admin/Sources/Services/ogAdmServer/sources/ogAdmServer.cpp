@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <jansson.h>
+#include "dbi.h"
 
 static char usuario[LONPRM]; // Usuario de acceso a la base de datos
 static char pasguor[LONPRM]; // Password del usuario
@@ -894,6 +895,62 @@ bool recorreProcedimientos(Database db, char *parametros, FILE *fileexe, char *i
 	}
 	return true;
 }
+
+struct og_task {
+	uint32_t	id;
+	uint32_t	scope;
+	const char	*params;
+};
+
+struct og_cmd {
+	struct og_task	task;
+	const char	*ip;
+	const char	*mac;
+};
+
+static struct og_cmd *cmds[4096];
+static unsigned int num_cmds;
+
+static const struct og_cmd *og_find_command(uint32_t scope)
+{
+	unsigned int i;
+
+	for (i = 0; i < num_cmds; i++) {
+		if (cmds[i]->task.scope != scope)
+			continue;
+
+		/* XXX remove this command from array. */
+		return cmds[i];
+	}
+
+	return NULL;
+}
+
+static TRAMA *og_msg_alloc(char *data, unsigned int len);
+static void og_msg_free(TRAMA *ptrTrama);
+
+static int og_deliver_pending_command(const struct og_cmd *cmd, int idx)
+{
+	int sock = tbsockets[idx].cli ? tbsockets[idx].cli->io.fd : -1;
+	char buf[4096];
+	TRAMA *msg;
+	int len;
+
+	len = snprintf(buf, sizeof(buf), "%s\r", cmd->task.params);
+
+	msg = og_msg_alloc(buf, len);
+	if (!msg)
+		return -1;
+
+	strcpy(tbsockets[idx].estado, CLIENTE_OCUPADO);
+	mandaTrama(&sock, msg);
+	og_msg_free(msg);
+
+	/* XXX free() command object here. */
+
+	return 0;
+}
+
 // ________________________________________________________________________________________________________
 // Función: ComandosPendientes
 //
@@ -910,6 +967,7 @@ static bool ComandosPendientes(TRAMA *ptrTrama, struct og_client *cli)
 {
 	int socket_c = og_client_socket(cli);
 	char *ido,*iph,pids[LONPRM];
+	const struct og_cmd *cmd;
 	int ids, idx;
 
 	iph = copiaParametro("iph",ptrTrama); // Toma dirección IP
@@ -921,7 +979,11 @@ static bool ComandosPendientes(TRAMA *ptrTrama, struct og_client *cli)
 		syslog(LOG_ERR, "client does not exist\n");
 		return false;
 	}
-	if (buscaComandos(ido, ptrTrama, &ids)) { // Existen comandos pendientes
+
+	cmd = og_find_command(atoi(ido));
+	if (cmd) {
+		return og_deliver_pending_command(cmd, idx);
+	} else if (buscaComandos(ido, ptrTrama, &ids)) { // Existen comandos pendientes
 		ptrTrama->tipo = MSG_COMANDO;
 		sprintf(pids, "\rids=%d\r", ids);
 		strcat(ptrTrama->parametros, pids);
@@ -3283,6 +3345,7 @@ struct og_msg_params {
 	bool		echo;
 	struct og_partition	partition_setup[OG_PARTITION_MAX];
 	struct og_sync_params sync_setup;
+	const char	*task_id;
 	uint64_t	flags;
 };
 
@@ -4653,6 +4716,145 @@ static int og_cmd_restore_incremental_image(json_t *element, struct og_msg_param
 	return 0;
 }
 
+static int og_run_command(struct og_dbi *dbi, const struct og_task *task)
+{
+	struct og_cmd *cmd;
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn,
+				 "SELECT ip,mac FROM ordenadores WHERE idordenador=%d",
+				 task->scope);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	do {
+		cmd = (struct og_cmd *)calloc(1, sizeof(struct og_cmd));
+		if (!cmd)
+			return -1;
+
+		cmd->task	= *task;
+
+		/* XXX only for Wake-on-LAN */
+		cmd->ip		= strdup(dbi_result_get_string(result, "ip"));
+		cmd->mac	= strdup(dbi_result_get_string(result, "mac"));
+
+		cmds[num_cmds++] = cmd;
+
+	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
+
+	return 0;
+}
+
+static int og_run_procedure(struct og_dbi *dbi, struct og_task *task)
+{
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn,
+			"SELECT parametros "
+			"FROM procedimientos_acciones "
+			"WHERE idprocedimiento=%d ORDER BY orden", task->id);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	dbi_result_free(result);
+
+	do {
+		task->params	= strdup(dbi_result_get_string(result, "parametros"));
+
+		og_run_command(dbi, task);
+
+	} while (!dbi_result_next_row(result));
+
+	return 0;
+}
+
+/* XXX missing DB configuration. */
+static struct og_dbi_config dbi_config;
+
+static int og_run_task(uint32_t task_id)
+{
+	struct og_task task = {};
+	const char *msglog;
+	struct og_dbi *dbi;
+	dbi_result result;
+
+	dbi = og_dbi_open(&dbi_config);
+	if (!dbi) {
+		syslog(LOG_ERR, "cannot open connection database (%s:%d)\n",
+		       __func__, __LINE__);
+		return -1;
+	}
+
+	result = dbi_conn_queryf(dbi->conn,
+			"SELECT tareas_acciones.orden, "
+				"tareas_acciones.idprocedimiento, "
+				"tareas_acciones.tareaid, "
+				"tareas.ambito, "
+				"tareas.idambito, "
+				"tareas.restrambito "
+			" FROM tareas"
+				" INNER JOIN tareas_acciones ON tareas_acciones.idtarea=tareas.idtarea"
+                        " WHERE tareas_acciones.idtarea=%u ORDER BY tareas_acciones.orden", task_id);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	do {
+		task.id		= dbi_result_get_uint(result, "idprocedimiento");
+		task.scope	= dbi_result_get_uint(result, "idambito");
+
+		og_run_procedure(dbi, &task);
+
+	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
+	og_dbi_close(dbi);
+
+	return 0;
+}
+
+static int og_cmd_task_post(json_t *element, struct og_msg_params *params)
+{
+	const char *key;
+	json_t *value;
+	int err;
+
+	if (json_typeof(element) != JSON_OBJECT)
+		return -1;
+
+	json_object_foreach(element, key, value) {
+		if (!strcmp(key, "clients"))
+			err = og_json_parse_clients(value, params);
+		if (!strcmp(key, "task"))
+			err = og_json_parse_string(value, &params->task_id);
+
+		if (err < 0)
+			break;
+	}
+
+	if (!og_msg_params_validate(params, OG_REST_PARAM_ADDR))
+		return -1;
+
+	og_run_task(atoi(params->task_id));
+
+	return og_cmd_legacy_send(params, "Actualizar", CLIENTE_OCUPADO);
+}
+
 static int og_client_method_not_found(struct og_client *cli)
 {
 	/* To meet RFC 7231, this function MUST generate an Allow header field
@@ -4952,6 +5154,15 @@ static int og_client_state_process_payload_rest(struct og_client *cli)
 		}
 
 		err = og_cmd_run_schedule(root, &params);
+	} else if (!strncmp(cmd, "task/run", strlen("task/run"))) {
+		if (method != OG_METHOD_POST)
+			return og_client_method_not_found(cli);
+
+		if (!root) {
+			syslog(LOG_ERR, "command task with no payload\n");
+			return og_client_bad_request(cli);
+		}
+		err = og_cmd_task_post(root, &params);
 	} else {
 		syslog(LOG_ERR, "unknown command: %.32s ...\n", cmd);
 		err = og_client_not_found(cli);
