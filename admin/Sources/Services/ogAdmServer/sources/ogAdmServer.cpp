@@ -897,8 +897,10 @@ bool recorreProcedimientos(Database db, char *parametros, FILE *fileexe, char *i
 }
 
 struct og_task {
-	uint32_t	id;
+	uint32_t	procedure_id;
+	uint32_t	type_scope;
 	uint32_t	scope;
+	const char	*filtered_scope;
 	const char	*params;
 };
 
@@ -4716,7 +4718,170 @@ static int og_cmd_restore_incremental_image(json_t *element, struct og_msg_param
 	return 0;
 }
 
-static int og_run_command(struct og_dbi *dbi, const struct og_task *task)
+og_run_group_clients(struct og_dbi *dbi, char *sqlstr) {
+
+	char sqlstr[LONSQL];
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn, sqlstr);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	do {
+		uint32_t group_id = dbi_result_get_uint(result, "idgrupo");
+
+		sprintf(sqlstr, "SELECT idgrupo FROM gruposordenadores "
+				"WHERE grupoid=%d", group_id);
+		if (og_run_group_clients(dbi, sqlstr))
+			return -1;
+
+		sprintf(sqlstr,"SELECT ip,mac FROM aulas "
+				"WHERE grupoid=%d", group_id);
+		if (og_run_command(dbi, task, sqlstr))
+			return -1;
+
+	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
+
+	return 0;
+}
+
+og_run_classrooms(struct og_dbi *dbi, char *sqlstr) {
+
+	char sqlstr[LONSQL];
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn, sqlstr);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	do {
+		uint32_t classroom_id = dbi_result_get_uint(result, "idaula");
+
+		sprintf(sqlstr, "SELECT idgrupo FROM gruposordenadores "
+				"WHERE idaula=%d AND grupoid=0", classroom_id);
+		if (og_run_group_clients(dbi, sqlstr))
+			return -1;
+
+		sprintf(sqlstr,"SELECT ip,mac FROM aulas "
+				"WHERE idaula=%d", classroom_id);
+		if (og_run_command(dbi, task, sqlstr))
+			return -1;
+
+	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
+
+	return 0;
+}
+
+og_run_group_classrooms(struct og_dbi *dbi, char *sqlstr) {
+
+	char sqlstr[LONSQL];
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn, sqlstr);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	do {
+		uint32_t group_id = dbi_result_get_uint(result, "idgrupo");
+
+		sprintf(sqlstr, "SELECT idgrupo FROM grupos "
+				"WHERE grupoid=%d AND tipo=%d", group_id, AMBITO_GRUPOSAULAS);
+		if (og_run_group_classrooms(dbi, sqlstr))
+			return -1;
+
+		sprintf(sqlstr,"SELECT idaula FROM aulas WHERE grupoid=%d", group_id);
+		if (og_run_classrooms(dbi, sqlstr))
+			return -1;
+
+	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
+
+	return 0;
+}
+
+og_run_center(struct og_dbi *dbi, uint32_t center_id) {
+
+	char sqlstr[LONSQL];
+
+	sprintf(sqlstr,"SELECT idgrupo FROM grupos "
+			"WHERE idcentro=%d AND grupoid=0 AND tipo=%d",
+			center_id, AMBITO_GRUPOSAULAS);
+	if (og_run_group_classrooms(dbi, sqlstr))
+		return -1;
+
+	sprintf(sqlstr,"SELECT idaula FROM aulas "
+			"WHERE idcentro=%d AND grupoid=0 AND tipo=%d", center_id);
+	if (og_run__classrooms(dbi, sqlstr))
+		return -1;
+
+}
+
+static int og_get_clients(struct og_dbi *dbi, const struct og_task *task)
+{
+	char sqlstr[LONSQL];
+
+	concli=0;
+	/* Reserva memoria al meno para caracter nulo */
+	cadenaid=(char*) reservaMemoria(1);
+	cadenaip=(char*) reservaMemoria(1);
+	cadenamac=(char*) reservaMemoria(1);
+
+	switch (task->type_scope) {
+		case AMBITO_CENTROS:
+			og_run_center(dbi); //XXX run centers bad name
+			break;
+		case AMBITO_GRUPOSAULAS:
+			sprintf(sqlstr, "SELECT idgrupo FROM grupos "
+					"WHERE idgrupo=%d AND tipo=%d",
+					idambito, AMBITO_GRUPOSAULAS);
+			og_run_group_classrooms(dbi, task, sqlstr);
+			break;
+		case AMBITO_AULAS:
+			sprintf(sqlstr,
+					"SELECT idaula FROM aulas WHERE idaula=%d", idambito);
+			og_run_classrooms(dbi, sqlstr);
+			break;
+		case AMBITO_GRUPOSORDENADORES:
+			sprintf(sqlstr, "SELECT idgrupo FROM gruposordenadores "
+					"WHERE idgrupo=%d",idambito);
+			og_run_group_clients(dbi, sqlstr);
+			break;
+		case AMBITO_ORDENADORES:
+			sprintf(sqlstr, "SELECT ip,mac,idordenador FROM ordenadores "
+					"WHERE idordenador=%d", idambito);
+			og_run_command(dbi, sqlstr);
+			break;
+		default: // XXX Se trata de un conjunto aleatorio de ordenadores
+			sprintf(sqlstr,"SELECT ip,mac,idordenador  FROM ordenadores "
+					"WHERE idordenador IN (%s)",restrambito);
+			og_run_command(dbi, sqlstr);
+
+	}
+	return (TRUE);
+}
+
+static int og_run_command(struct og_dbi *dbi, const struct og_task *task,
+		char *sqlstr)
 {
 	struct og_cmd *cmd;
 	const char *msglog;
@@ -4758,9 +4923,9 @@ static int og_run_procedure(struct og_dbi *dbi, struct og_task *task)
 	dbi_result result;
 
 	result = dbi_conn_queryf(dbi->conn,
-			"SELECT parametros "
+			"SELECT parametros, procedimientoid "
 			"FROM procedimientos_acciones "
-			"WHERE idprocedimiento=%d ORDER BY orden", task->id);
+			"WHERE idprocedimiento=%d ORDER BY orden", task->procedure_id);
 	if (!result) {
 		dbi_conn_error(dbi->conn, &msglog);
 		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
@@ -4768,20 +4933,31 @@ static int og_run_procedure(struct og_dbi *dbi, struct og_task *task)
 		return -1;
 	}
 
-	dbi_result_free(result);
-
 	do {
+		 uint32_t procedure_id = dbi_result_get_uint(result, "procedimientoid");
+         if (procedure_id > 0) {
+			 task->procedure_id = procedure_id;
+             if(og_run_procedure(dbi, task))
+				 return -1;
+         }
+
 		task->params	= strdup(dbi_result_get_string(result, "parametros"));
 
-		og_run_command(dbi, task);
+		og_get_clients(dbi, task);
 
 	} while (!dbi_result_next_row(result));
+
+	dbi_result_free(result);
 
 	return 0;
 }
 
-/* XXX missing DB configuration. */
+/* XXX semi-missing DB configuration. */
 static struct og_dbi_config dbi_config;
+dbi_config.user = usuario;
+dbi_config.passwd = pasguor;
+dbi_config.host = datasource;
+dbi_config.passwd = catalog;
 
 static int og_run_task(uint32_t task_id)
 {
@@ -4815,9 +4991,12 @@ static int og_run_task(uint32_t task_id)
 	}
 
 	do {
-		task.id		= dbi_result_get_uint(result, "idprocedimiento");
-		task.scope	= dbi_result_get_uint(result, "idambito");
-
+		///XXX The scope is always the same in all the rows
+		task.procedure_id = dbi_result_get_uint(result,
+				"tareas_acciones.idprocedimiento");
+		task.type_scope = dbi_result_get_uint(result, "tareas.ambito");
+		task.scope = dbi_result_get_uint(result, "tareas.idambito");
+		task.filtered_scope = dbi_result_get_string(result, "tareas.restrambito");
 		og_run_procedure(dbi, &task);
 
 	} while (!dbi_result_next_row(result));
@@ -4838,8 +5017,6 @@ static int og_cmd_task_post(json_t *element, struct og_msg_params *params)
 		return -1;
 
 	json_object_foreach(element, key, value) {
-		if (!strcmp(key, "clients"))
-			err = og_json_parse_clients(value, params);
 		if (!strcmp(key, "task"))
 			err = og_json_parse_string(value, &params->task_id);
 
@@ -4847,7 +5024,7 @@ static int og_cmd_task_post(json_t *element, struct og_msg_params *params)
 			break;
 	}
 
-	if (!og_msg_params_validate(params, OG_REST_PARAM_ADDR))
+	if (!og_msg_params_validate(params, OG_REST_PARAM_TASK))
 		return -1;
 
 	og_run_task(atoi(params->task_id));
