@@ -10,6 +10,7 @@
 #include "ogAdmLib.c"
 #include "dbi.h"
 #include "list.h"
+#include "schedule.h"
 #include <ev.h>
 #include <syslog.h>
 #include <sys/ioctl.h>
@@ -18,6 +19,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <jansson.h>
+#include <time.h>
 
 static char usuario[LONPRM]; // Usuario de acceso a la base de datos
 static char pasguor[LONPRM]; // Password del usuario
@@ -3011,6 +3013,7 @@ struct og_msg_params {
 	bool		echo;
 	struct og_partition	partition_setup[OG_PARTITION_MAX];
 	struct og_sync_params sync_setup;
+	struct og_schedule_time time;
 	const char	*task_id;
 	uint64_t	flags;
 };
@@ -3047,6 +3050,12 @@ struct og_msg_params {
 #define OG_REST_PARAM_SYNC_METHOD		(1UL << 29)
 #define OG_REST_PARAM_ECHO			(1UL << 30)
 #define OG_REST_PARAM_TASK			(1UL << 31)
+#define OG_REST_PARAM_TIME_YEARS		(1UL << 32)
+#define OG_REST_PARAM_TIME_MONTHS		(1UL << 33)
+#define OG_REST_PARAM_TIME_DAYS			(1UL << 34)
+#define OG_REST_PARAM_TIME_HOURS		(1UL << 35)
+#define OG_REST_PARAM_TIME_AM_PM		(1UL << 36)
+#define OG_REST_PARAM_TIME_MINUTES		(1UL << 37)
 
 static bool og_msg_params_validate(const struct og_msg_params *params,
 				   const uint64_t flags)
@@ -3082,6 +3091,16 @@ static int og_json_parse_string(json_t *element, const char **str)
 		return -1;
 
 	*str = json_string_value(element);
+	return 0;
+}
+
+static int og_json_parse_unsigned_integer(json_t *element,
+					  unsigned int *integer)
+{
+	if (json_typeof(element) != JSON_INTEGER)
+		return -1;
+
+	*integer = json_integer_value(element);
 	return 0;
 }
 
@@ -3218,6 +3237,41 @@ static int og_json_parse_partition_setup(json_t *element,
 			return -1;
 	}
 	return 0;
+}
+
+static int og_json_parse_time_params(json_t *element,
+				     struct og_msg_params *params)
+{
+	const char *key;
+	json_t *value;
+	int err = 0;
+
+	json_object_foreach(element, key, value) {
+		if (!strcmp(key, "years")) {
+			err = og_json_parse_unsigned_integer(value, &params->time.years);
+			params->flags |= OG_REST_PARAM_TIME_YEARS;
+		} else if (!strcmp(key, "months")) {
+			err = og_json_parse_unsigned_integer(value, &params->time.months);
+			params->flags |= OG_REST_PARAM_TIME_MONTHS;
+		} else if (!strcmp(key, "days")) {
+			err = og_json_parse_unsigned_integer(value, &params->time.days);
+			params->flags |= OG_REST_PARAM_TIME_DAYS;
+		} else if (!strcmp(key, "hours")) {
+			err = og_json_parse_unsigned_integer(value, &params->time.hours);
+			params->flags |= OG_REST_PARAM_TIME_HOURS;
+		} else if (!strcmp(key, "am_pm")) {
+			err = og_json_parse_unsigned_integer(value, &params->time.am_pm);
+			params->flags |= OG_REST_PARAM_TIME_AM_PM;
+		} else if (!strcmp(key, "minutes")) {
+			err = og_json_parse_unsigned_integer(value,
+						   &params->time.minutes);
+			params->flags |= OG_REST_PARAM_TIME_MINUTES;
+		}
+
+		if (err != 0)
+			return err;
+	}
+	return err;
 }
 
 static int og_cmd_legacy_send(struct og_msg_params *params, const char *cmd,
@@ -4665,6 +4719,20 @@ static int og_queue_task(struct og_dbi *dbi, uint32_t task_id)
 	return 0;
 }
 
+void og_schedule_task(unsigned int task_id)
+{
+	struct og_dbi *dbi;
+
+	dbi = og_dbi_open(&dbi_config);
+	if (!dbi) {
+		syslog(LOG_ERR, "cannot open connection database (%s:%d)\n",
+			   __func__, __LINE__);
+		return; //XXX
+	}
+	og_queue_task(dbi, task_id);
+	og_dbi_close(dbi);
+}
+
 static int og_cmd_task_post(json_t *element, struct og_msg_params *params)
 {
 	struct og_cmd *cmd;
@@ -4703,6 +4771,81 @@ static int og_cmd_task_post(json_t *element, struct og_msg_params *params)
 		params->ips_array[params->ips_array_len++] = cmd->ip;
 
 	return og_cmd_legacy_send(params, "Actualizar", CLIENTE_OCUPADO);
+}
+
+static int og_dbi_schedule_create(struct og_dbi *dbi, struct og_msg_params *params)
+{
+	const char *msglog;
+	dbi_result result;
+
+	result = dbi_conn_queryf(dbi->conn,
+				 "INSERT INTO programaciones (identificador,"
+				 " nombrebloque, annos, meses, diario, horas,"
+				 " ampm, minutos) VALUES (%s, %s, %d, %d, %d,"
+				 " %d, %d, %d)", params->id, params->name,
+				 params->time.years, params->time.months,
+				 params->time.days, params->time.hours,
+				 params->time.am_pm, params->time.minutes);
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		og_info((char *)msglog);
+		return -1;
+	}
+	dbi_result_free(result);
+
+	og_expand_schedule(atoi(params->id), &params->time);
+
+	return 0;
+}
+
+static struct ev_loop *og_loop;
+
+static int og_cmd_schedule_create(json_t *element, struct og_msg_params *params)
+{
+	struct og_dbi *dbi;
+	const char *key;
+	json_t *value;
+	int err;
+
+	if (json_typeof(element) != JSON_OBJECT)
+		return -1;
+
+	json_object_foreach(element, key, value) {
+		if (!strcmp(key, "task_id")) {
+			err = og_json_parse_string(value, &params->id);
+			params->flags |= OG_REST_PARAM_ID;
+		} else if (!strcmp(key, "name")) {
+			err = og_json_parse_string(value, &params->name);
+			params->flags |= OG_REST_PARAM_NAME;
+		} else if (!strcmp(key, "time_params"))
+			err = og_json_parse_time_params(value, params);
+
+		if (err < 0)
+			break;
+	}
+
+	if (!og_msg_params_validate(params, OG_REST_PARAM_ID |
+					    OG_REST_PARAM_NAME |
+					    OG_REST_PARAM_TIME_YEARS |
+					    OG_REST_PARAM_TIME_MONTHS |
+					    OG_REST_PARAM_TIME_HOURS |
+					    OG_REST_PARAM_TIME_MINUTES |
+					    OG_REST_PARAM_TIME_AM_PM))
+		return -1;
+
+	dbi = og_dbi_open(&dbi_config);
+	if (!dbi) {
+		syslog(LOG_ERR, "cannot open connection database (%s:%d)\n",
+			   __func__, __LINE__);
+		return -1;
+	}
+
+	err = og_dbi_schedule_create(dbi, params);
+	og_dbi_close(dbi);
+
+	og_set_schedule_timer(og_loop);
+
+	return err;
 }
 
 static int og_client_method_not_found(struct og_client *cli)
@@ -5013,6 +5156,16 @@ static int og_client_state_process_payload_rest(struct og_client *cli)
 			return og_client_bad_request(cli);
 		}
 		err = og_cmd_task_post(root, &params);
+	} else if (!strncmp(cmd, "schedule/create",
+				strlen("schedule/create"))) {
+		if (method != OG_METHOD_POST)
+			return og_client_method_not_found(cli);
+
+		if (!root) {
+			syslog(LOG_ERR, "command task with no payload\n");
+			return og_client_bad_request(cli);
+		}
+		err = og_cmd_schedule_create(root, &params);
 	} else {
 		syslog(LOG_ERR, "unknown command: %.32s ...\n", cmd);
 		err = og_client_not_found(cli);
@@ -5237,10 +5390,76 @@ static int og_socket_server_init(const char *port)
 	return sd;
 }
 
+static int og_get_schedules()
+{
+	struct og_msg_params params;
+	struct og_dbi *dbi;
+	const char *msglog;
+	dbi_result result;
+
+	dbi = og_dbi_open(&dbi_config);
+	if (!dbi) {
+		syslog(LOG_ERR, "cannot open connection database (%s:%d)\n",
+		       __func__, __LINE__);
+		return -1;
+	}
+
+	result = dbi_conn_queryf(dbi->conn,
+			"SELECT idprogramacion, tipoaccion, identificador, "
+			"sesion, annos, meses, diario, dias, semanas, horas, "
+			"ampm, minutos FROM programaciones "
+			"WHERE suspendida = 0");
+	if (!result) {
+		dbi_conn_error(dbi->conn, &msglog);
+		syslog(LOG_ERR, "failed to query database (%s:%d) %s\n",
+		       __func__, __LINE__, msglog);
+		return -1;
+	}
+
+	while (dbi_result_next_row(result)) {
+		params = (struct og_msg_params){}; //XXX (const struct og_raw_schedule){ 0 }
+
+		params.id = dbi_result_get_string(result, "identificador");
+		params.time.years = dbi_result_get_uint(result, "annos");
+		params.time.months = dbi_result_get_uint(result, "meses");
+		params.time.days = dbi_result_get_uint(result, "diario");
+		params.time.hours = dbi_result_get_uint(result, "horas");
+		params.time.am_pm = dbi_result_get_uint(result, "ampm");
+		params.time.minutes = dbi_result_get_uint(result, "minutos");
+
+		og_expand_schedule(atoi(params.id), &params.time);
+
+//		if(tipoaccion==EJECUCION_COMANDO) { // Es una programación de un comando
+//			return(ejecutarComando(db,idprogramacion,sesionprog));
+//		}
+//		else {
+//
+//			if(tipoaccion==EJECUCION_TAREA) {
+//				if(!tbl.Get("descritarea",descriaccion)) {
+//					tbl.GetErrorErrStr(msglog);
+//					errorInfo(modulo, msglog);
+//					return (FALSE);
+//				}
+//				return(ejecutarTarea(db,idprogramacion,idtipoaccion));
+//			}
+//			else{
+//				if(tipoaccion==EJECUCION_RESERVA){
+//					EjecutarReserva(idtipoaccion,db); // Es una programación de un trabajo
+//				}
+//			}
+//		}
+
+	}
+
+	dbi_result_free(result);
+
+	return(TRUE);
+}
+
 int main(int argc, char *argv[])
 {
 	struct ev_io ev_io_server, ev_io_server_rest;
-	struct ev_loop *loop = ev_default_loop(0);
+	og_loop = ev_default_loop(0);
 	int i;
 
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
@@ -5272,15 +5491,18 @@ int main(int argc, char *argv[])
 	if (socket_s < 0)
 		exit(EXIT_FAILURE);
 
+	og_get_schedules();
+	og_next_schedule(og_loop);
+
 	ev_io_init(&ev_io_server, og_server_accept_cb, socket_s, EV_READ);
-	ev_io_start(loop, &ev_io_server);
+	ev_io_start(og_loop, &ev_io_server);
 
 	socket_rest = og_socket_server_init("8888");
 	if (socket_rest < 0)
 		exit(EXIT_FAILURE);
 
 	ev_io_init(&ev_io_server_rest, og_server_accept_cb, socket_rest, EV_READ);
-	ev_io_start(loop, &ev_io_server_rest);
+	ev_io_start(og_loop, &ev_io_server_rest);
 
 	infoLog(1); // Inicio de sesión
 
@@ -5290,7 +5512,7 @@ int main(int argc, char *argv[])
 	syslog(LOG_INFO, "Waiting for connections\n");
 
 	while (1)
-		ev_loop(loop, 0);
+		ev_loop(og_loop, 0);
 
 	exit(EXIT_SUCCESS);
 }
