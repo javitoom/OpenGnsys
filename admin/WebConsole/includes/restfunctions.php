@@ -551,6 +551,34 @@ function run_task($task_id) {
 	return common_request(OG_REST_CMD_RUN_TASK, POST, $data);
 }
 
+function create_schedule($task_id, $name, $years, $months, $days, $hours,
+			$am_pm, $minutes) {
+
+	$data = array(OG_REST_PARAM_CLIENTS => $ips,
+		OG_REST_PARAM_DISK => $disk,
+		OG_REST_PARAM_PART => $part,
+		OG_REST_PARAM_ID => $image_id,
+		OG_REST_PARAM_NAME => $name,
+		OG_REST_PARAM_REPOS => $repos,
+		OG_REST_PARAM_PROFILE => $profile,
+		OG_REST_PARAM_TYPE => $type,
+		OG_REST_PARAM_SYNC_PARAMS => array(
+			OG_REST_PARAM_PATH => $path,
+			OG_REST_PARAM_METHOD => $method,
+			OG_REST_PARAM_SYNC => $sync,
+			OG_REST_PARAM_DIFF => $diff,
+			OG_REST_PARAM_REMOVE => $remove,
+			OG_REST_PARAM_COMPRESS => $compress,
+			OG_REST_PARAM_CLEANUP => $cleanup,
+			OG_REST_PARAM_CACHE => $cache,
+			OG_REST_PARAM_CLEANUP_CACHE => $cleanup_cache,
+			OG_REST_PARAM_REMOVE_DST => $remove_dst,
+		)
+	);
+
+	common_request(OG_REST_CMD_RESTORE_BASIC_IMAGE, POST, $data);
+}
+
 /*
  * @function multiRequest.
  * @param    URLs array (may include header and POST data), cURL options array.

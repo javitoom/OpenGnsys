@@ -83,8 +83,8 @@ if ($cmd){
 	$cmd->Conexion->Cerrar();
 }
 if($pswop!=$op_suspension){
-	if (!$resul){ // Ha ocurrido algún error
-		$reporerr=$cmd->UltimoError();
+if (!$resul){ // Ha ocurrido algún error
+	$reporerr=$cmd->UltimoError();
 		$repordes=$cmd->DescripUltimoError();
 		echo "error_programacion()";
 	}
