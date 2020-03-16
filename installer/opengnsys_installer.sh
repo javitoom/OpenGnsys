@@ -132,8 +132,8 @@ function globalSetup ()
 	else
 		REMOTE=1
 	fi
-	BRANCH="master"
-	CODE_URL="https://codeload.github.com/opengnsys/OpenGnsys/zip/$BRANCH"
+	BRANCH="devel-ogadmserver-4"
+	CODE_URL="https://codeload.github.com/javsanpar/OpenGnsys/zip/$BRANCH"
 	API_URL="https://api.github.com/repos/opengnsys/OpenGnsys"
 
 	# Directorios de instalación y destino de OpenGnsys.
@@ -1397,7 +1397,7 @@ function copyClientFiles()
 		errorAndLog "${FUNCNAME}(): client copy files with errors"
 	fi
 
-	local ogclientUrl="https://codeload.github.com/alvneiayu/ogClient/zip/$BRANCH"
+	local ogclientUrl="https://codeload.github.com/javsanpar/ogClient/zip/$BRANCH"
 
 	echoAndLog "${FUNCNAME}(): downloading ogClient code..."
 
