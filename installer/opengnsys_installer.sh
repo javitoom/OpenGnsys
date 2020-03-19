@@ -1860,7 +1860,6 @@ openGnsysConfigure
 # Mostrar sumario de la instalación e instrucciones de post-instalación.
 installationSummary
 
-rm -rf $WORKDIR
 echoAndLog "OpenGnsys installation finished at $(date)"
 exit 0
 
