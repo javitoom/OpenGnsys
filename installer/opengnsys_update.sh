@@ -605,6 +605,23 @@ EOT
 	DOWNLOADURL=${DOWNLOADURL:-"https://$OPENGNSYS_SERVER/trac/downloads"}
 
 	echoAndLog "${FUNCNAME}(): client files successfully updated"
+
+	local ogclientUrl=\
+		"https://codeload.github.com/alvneiayu/ogClient/zip/$BRANCH"
+
+	echoAndLog "${FUNCNAME}(): downloading ogClient code..."
+
+	if ! curl "${ogclientUrl}" -o ogclient.zip && \
+	     unzip -qo ogclient.zip && \
+	     rm -fr $INSTALL_TARGET/client/ogClient && \
+	     mv "ogClient-$BRANCH" $INSTALL_TARGET/client/ogClient
+	then
+		errorAndLog "${FUNCNAME}(): "\
+			    "error getting ogClient code from ${ogclientUrl}"
+		exit 1
+	fi
+	rm -f ogclient.zip
+	echoAndLog "${FUNCNAME}(): ogClient code was downloaded"
 }
 
 # Crear certificado para la firma de cargadores de arranque, si es necesario.
