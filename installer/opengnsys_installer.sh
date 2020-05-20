@@ -51,7 +51,7 @@ function userData ()
 	DEFAULT_MYSQL_ROOT_PASSWORD="passwordroot"	# Clave por defecto root de MySQL
 	DEFAULT_OPENGNSYS_DB_USER="usuog"		# Usuario por defecto de acceso a la base de datos
 	DEFAULT_OPENGNSYS_DB_PASSWD="passusuog"		# Clave por defecto de acceso a la base de datos
-	DEFAULT_OPENGNSYS_CLIENT_PASSWD="og"		# Clave por defecto de acceso del cliente	
+	DEFAULT_OPENGNSYS_CLIENT_PASSWD="og"		# Clave por defecto de acceso del cliente
 	DEFAULT_OGLIVE="ogLive-bionic-5.0.0-27-generic-amd64-r20190830.7208cc9.iso"	# Cliente ogLive
 
 	echo -e "\\nOpenGnsys Installation"
@@ -132,9 +132,9 @@ function globalSetup ()
 	else
 		REMOTE=1
 	fi
-	BRANCH="master"
-	CODE_URL="https://codeload.github.com/opengnsys/OpenGnsys/zip/$BRANCH"
-	API_URL="https://api.github.com/repos/opengnsys/OpenGnsys"
+	BRANCH="devel-ogadmserver-for-master"
+	CODE_URL="https://codeload.github.com/javsanpar/OpenGnsys/zip/$BRANCH"
+	API_URL="https://api.github.com/repos/javsanpar/OpenGnsys"
 
 	# Directorios de instalación y destino de OpenGnsys.
 	WORKDIR=/tmp/opengnsys_installer
@@ -341,7 +341,7 @@ case "$OSDISTRIB" in
 			DEPENDENCIES=( ${DEPENDENCIES[*]/ctorrent/http://dl.fedoraproject.org/pub/epel/6/$(arch)/Packages/c/ctorrent-1.3.4-14.dnh3.3.2.el6.$(arch).rpm} )
 		fi
 		;;
-	fedora)	# Postconfiguación personalizada para Fedora. 
+	fedora)	# Postconfiguación personalizada para Fedora.
 		# Incluir paquetes específicos.
 		DEPENDENCIES=( ${DEPENDENCIES[@]} btrfs-progs )
 		# Sustituir MySQL por MariaDB a partir de Fedora 20.
@@ -954,7 +954,7 @@ function smbConfigure()
 	echoAndLog "${FUNCNAME}(): Configuring Samba service."
 
 	backupFile $SAMBACFGDIR/smb.conf
-	
+
 	# Copiar plantailla de recursos para OpenGnsys
         sed -e "s/OPENGNSYSDIR/${INSTALL_TARGET//\//\\/}/g" \
 		$WORKDIR/opengnsys/server/etc/smb-og.conf.tmpl > $SAMBACFGDIR/smb-og.conf
@@ -1021,7 +1021,7 @@ EOT
 	return 0
 }
 
-	
+
 ########################################################################
 ## Configuración servicio DHCP
 ########################################################################
@@ -1103,7 +1103,7 @@ function installDownloadableFiles()
 {
 	local FILENAME=ogagentpkgs-$INSTVERSION.tar.gz
 	local TARGETFILE=$WORKDIR/$FILENAME
- 
+
 	# Descargar archivo comprimido, si es necesario.
 	if [ -s $PROGRAMDIR/$FILENAME ]; then
 		echoAndLog "${FUNCNAME}(): Moving $PROGRAMDIR/$FILENAME file to $(dirname $TARGETFILE)"
@@ -1116,7 +1116,7 @@ function installDownloadableFiles()
 		errorAndLog "${FUNCNAME}(): Cannot download $FILENAME"
 		return 1
 	fi
-	
+
 	# Descomprimir fichero en zona de descargas.
 	tar xvzf $TARGETFILE -C $INSTALL_TARGET/www/descargas
 	if [ $? != 0 ]; then
@@ -1233,7 +1233,7 @@ function createDirs()
 	fi
 
 	# Crear usuario ficticio.
-	if id -u $OPENGNSYS_CLIENT_USER &>/dev/null; then 
+	if id -u $OPENGNSYS_CLIENT_USER &>/dev/null; then
 		echoAndLog "${FUNCNAME}(): user \"$OPENGNSYS_CLIENT_USER\" is already created"
 	else
 		echoAndLog "${FUNCNAME}(): creating OpenGnsys user"
@@ -1346,7 +1346,7 @@ function servicesCompilation ()
 function copyInterfaceAdm ()
 {
 	local hayErrores=0
-	
+
 	# Crear carpeta y copiar Interface
 	echoAndLog "${FUNCNAME}(): Copying Administration Interface Folder"
 	cp -ar $WORKDIR/opengnsys/admin/Interface $INSTALL_TARGET/client/interfaceAdm
@@ -1373,7 +1373,7 @@ function copyClientFiles()
 		errorAndLog "${FUNCNAME}(): error while copying client estructure"
 		errstatus=1
 	fi
-	
+
 	echoAndLog "${FUNCNAME}(): Copying OpenGnsys Cloning Engine files."
 	mkdir -p $INSTALL_TARGET/client/lib/engine/bin
 	cp -a $WORKDIR/opengnsys/client/engine/*.lib* $INSTALL_TARGET/client/lib/engine/bin
@@ -1381,14 +1381,14 @@ function copyClientFiles()
 		errorAndLog "${FUNCNAME}(): error while copying engine files"
 		errstatus=1
 	fi
-	
+
 	if [ $errstatus -eq 0 ]; then
 		echoAndLog "${FUNCNAME}(): client copy files success."
 	else
 		errorAndLog "${FUNCNAME}(): client copy files with errors"
 	fi
 
-	local ogclientUrl="https://codeload.github.com/alvneiayu/ogClient/zip/$BRANCH"
+	local ogclientUrl="https://codeload.github.com/javsanpar/ogClient/zip/$BRANCH"
 
 	echoAndLog "${FUNCNAME}(): downloading ogClient code..."
 
@@ -1429,7 +1429,7 @@ function clientCreate()
 
 	local FILENAME="$1"
 	local TARGETFILE=$INSTALL_TARGET/lib/$FILENAME
- 
+
 	# Descargar cliente, si es necesario.
 	if [ -s $PROGRAMDIR/$FILENAME ]; then
 		echoAndLog "${FUNCNAME}(): Moving $PROGRAMDIR/$FILENAME file to $(dirname $TARGETFILE)"
@@ -1669,7 +1669,7 @@ if [ -n "$INSTALLEXTRADEPS" ]; then
 	for (( i=0; i<${#INSTALLEXTRADEPS[*]}; i++ )); do
 		eval ${INSTALLEXTRADEPS[i]}
 	done
-fi	
+fi
 
 # Detectar datos de auto-configuración después de instalar paquetes.
 autoConfigurePost
@@ -1749,7 +1749,7 @@ if [ $? -eq 0 ]; then
 	# Asignar clave del usuario "root".
 	mysqlSetRootPassword "${MYSQL_ROOT_PASSWORD}"
 else
-	# Si ya está instalado el gestor de bases de datos, obtener clave de "root", 
+	# Si ya está instalado el gestor de bases de datos, obtener clave de "root",
 	mysqlGetRootPassword
 fi
 
