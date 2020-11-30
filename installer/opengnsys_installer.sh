@@ -133,8 +133,8 @@ function globalSetup ()
 		REMOTE=1
 	fi
 	BRANCH="master"
-	CODE_URL="https://codeload.github.com/opengnsys/OpenGnsys/zip/$BRANCH"
-	API_URL="https://api.github.com/repos/opengnsys/OpenGnsys"
+	CODE_URL="https://codeload.github.com/javsanpar/OpenGnsys/zip/$BRANCH"
+	API_URL="https://api.github.com/repos/javsanpar/OpenGnsys"
 
 	# Directorios de instalación y destino de OpenGnsys.
 	WORKDIR=/tmp/opengnsys_installer
